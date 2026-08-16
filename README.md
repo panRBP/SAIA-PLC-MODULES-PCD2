@@ -447,6 +447,108 @@ BUS15 -> +5 V
 BUS16 -> GND
 ```
 
+## Module Electronics – IC Inventory and Detected Connections
+
+This section documents the board-level findings: the ICs found on the module
+PCBs and the connections between them measured during reverse engineering.
+It complements the bus-level protocol description above.
+
+### PCD2.A460 – output board (16 digital outputs)
+
+Detected ICs:
+
+| Qty | IC | Role |
+| --- | --- | --- |
+| 4 | VN330SP | 4-channel intelligent high-side MOSFET drivers: 4 x 4 = 16 output channels |
+| 2 | 74HC259 (HC259D) | 8-bit addressable latches, one per output bank (Q0..Q7, Q8..Q15) |
+| 4 | 74HC251 (74HC251AG) | 8-to-1 multiplexers: readback of the output state (feedback path) |
+| 2 | 74HC32 (HC32AG) | quad OR gates: bank-enable / read-enable logic |
+| 1 | NAND gate, SOT-23-5 (74HC1G00 / 74AHC1G00) | pins 1 & 2 tied together, wired as inverter: Y = !A |
+
+Data path:
+
+- 4 address bits A0..A3 (BUS12, BUS4, BUS13, BUS11) select one of 16 channels.
+- **BUS11 (= A3 / bank)** is inverted by the SOT-23-5 NAND; both BUS11 and
+  `!BUS11` are fed into the two HC32 gate arrays, which select one of the two
+  output banks: bank 0 -> HC259 #1 (Q0..Q7), bank 1 -> HC259 #2 (Q8..Q15).
+- A0..A2 (BUS12, BUS4, BUS13) address the 8 channels inside the selected bank.
+- DATA OUT (BUS3) is latched into the selected HC259, which drives the
+  VN330SP inputs; the VN330SP high-side drivers switch the 16 outputs.
+- The output state is read back (feedback) through the HC251 multiplexers.
+
+### PCD2.E160 – input board (16 digital inputs)
+
+Detected ICs:
+
+| Qty | IC | Role |
+| --- | --- | --- |
+| 2 | 74HC251 (74HC251AG) | 8-to-1 multiplexers: read I0..I7 (MUX #1) and I8..I15 (MUX #2) |
+| 1 | 74HC32 (HC32AG) | quad OR gates: read-enable logic |
+| 1 | NAND gate, SOT-23-5 (inverter) | inverts BUS11 |
+
+Measured: on the E160 board, BUS6, BUS7 and BUS11 go only to the HC32 logic,
+while **BUS10 has no connection (floating)** — consistent with its role in the
+write path only (the E160 is a read-only module).
+
+### Detected HC32 connections (A460)
+
+Pin-by-pin measurements of both HC32 gate arrays:
+
+| HC32 pin | HC32 #1 | HC32 #2 |
+| --- | --- | --- |
+| 1 | BUS11 and NAND pins 1/2 | NAND output (!BUS11) |
+| 2 | BUS6 and HC32 #2 pin 2 | BUS6 and HC32 #1 pin 2 |
+| 3 | to pins 4 and 9 | to pins 4 and 9 |
+| 4 | to pins 3 and 9 | to pins 3 and 9 |
+| 5 | BUS10 and HC32 #2 pin 5 | BUS10 and HC32 #1 pin 5 |
+| 6 | to HC259 #1 pin 14 (Enable) | to HC259 #2 pin 14 (Enable) |
+| 7 | GND | GND |
+| 8 | to HC251 #1 pin 7 (/OE) | to HC251 #2 pin 7 (/OE) |
+| 9 | to pins 3 and 4 | to pins 3 and 4 |
+| 10 | BUS7 and HC32 #2 pin 10 | BUS7 and HC32 #1 pin 10 |
+| 11 | not traced (possibly floating) | not traced (possibly floating) |
+| 12 | GND | GND |
+| 13 | GND | GND |
+| 14 | VCC | VCC |
+
+### Derived logic equations
+
+Within each HC32, the output of gate 1 (pins 1, 2 -> 3) is fed back into
+gate 2 (pin 4) and gate 3 (pin 9); gates 2 and 3 each receive one additional
+input (pin 5 = BUS10; pin 10 = BUS7). Two OR gates are chained into a 3-input
+OR function:
+
+```text
+HC32 #1:
+  Y1  = BUS11 OR BUS6
+  EN0 = (BUS11 OR BUS6) OR BUS10      -> HC259 #1 Enable   (output bank 0)
+  OE0 = (BUS11 OR BUS6) OR BUS7       -> HC251 #1 /OE       (feedback MUX 0)
+
+HC32 #2:
+  Y1  = !BUS11 OR BUS6
+  EN1 = (!BUS11 OR BUS6) OR BUS10     -> HC259 #2 Enable    (output bank 1)
+  OE1 = (!BUS11 OR BUS6) OR BUS7      -> HC251 #2 /OE       (feedback MUX 1)
+```
+
+With BUS6 held LOW (`!CS` permanently asserted, as in the current Arduino
+implementation), the module is always selected and writes/reads are gated by
+BUS10 and BUS7 — matching the confirmed `!WR` / `!RD` roles of these lines.
+
+### Signal-role hypotheses considered during reverse engineering
+
+The logic analysis above initially suggested the following roles, before the
+bus protocol was confirmed by the working Arduino implementation:
+
+| BUS | Hypothesis from logic analysis | Final (working firmware) |
+| --- | --- | --- |
+| BUS6 | write cycle strobe | suspected !CS, held at GND (always selected) |
+| BUS7 | read cycle strobe | !RD (confirmed) |
+| BUS10 | output register select (write path) | !WR (confirmed) |
+| BUS11 | bank / feedback register select | A3 / bank select (confirmed) |
+
+Both views are consistent: BUS11 selects the output/feedback bank, which is
+exactly the function of the most significant address bit A3.
+
 ## Planned Pin Mapping Change (Future Work)
 
 The current pinout is planned to be remapped to allow faster, port-based
@@ -1078,6 +1180,110 @@ BUS9  -> GND
 BUS15 -> +5 V
 BUS16 -> GND
 ```
+
+## Elektronika modulow – wykaz ukladow i wykryte polaczenia
+
+Ta sekcja dokumentuje ustalenia na poziomie plytek: uklady scalone znalezione
+na modulach oraz zmierzone polaczenia miedzy nimi. Uzupelnia opis protokolu
+magistrali powyzej.
+
+### PCD2.A460 – plytka wyjsc (16 wyjsc cyfrowych)
+
+Wykryte uklady:
+
+| Ilosc | Uklad | Rola |
+| --- | --- | --- |
+| 4 | VN330SP | 4-kanalowe inteligentne high-side drivery MOSFET: 4 x 4 = 16 kanalow wyjsciowych |
+| 2 | 74HC259 (HC259D) | adresowalne zatrzaski 8-bitowe, po jednym na bank wyjsc (Q0..Q7, Q8..Q15) |
+| 4 | 74HC251 (74HC251AG) | multipleksery 8-do-1: odczyt zwrotny stanu wyjsc (sciezka feedbacku) |
+| 2 | 74HC32 (HC32AG) | bramki OR (cztery na uklad): logika enable banku / enable odczytu |
+| 1 | bramka NAND, SOT-23-5 (74HC1G00 / 74AHC1G00) | piny 1 i 2 zwarte, pracuje jako inwerter: Y = !A |
+
+Sciezka danych:
+
+- 4 bity adresu A0..A3 (BUS12, BUS4, BUS13, BUS11) wybieraja jeden z 16
+  kanalow.
+- **BUS11 (= A3 / bank)** jest odwracany przez NAND w SOT-23-5; zarowno BUS11,
+  jak i `!BUS11` trafiaja do dwoch ukladow HC32, ktore wybieraja jeden z dwoch
+  bankow wyjsc: bank 0 -> HC259 #1 (Q0..Q7), bank 1 -> HC259 #2 (Q8..Q15).
+- A0..A2 (BUS12, BUS4, BUS13) adresuja 8 kanalow wewnatrz wybranego banku.
+- DATA OUT (BUS3) jest zatrzaskiwany w wybranym HC259, ktory steruje wejscami
+  VN330SP; drivery high-side VN330SP przelaczaja 16 wyjsc.
+- Stan wyjsc jest odczytywany zwrotnie (feedback) przez multipleksery HC251.
+
+### PCD2.E160 – plytka wejsc (16 wejsc cyfrowych)
+
+Wykryte uklady:
+
+| Ilosc | Uklad | Rola |
+| --- | --- | --- |
+| 2 | 74HC251 (74HC251AG) | multipleksery 8-do-1: odczyt I0..I7 (MUX #1) i I8..I15 (MUX #2) |
+| 1 | 74HC32 (HC32AG) | bramki OR: logika enable odczytu |
+| 1 | bramka NAND, SOT-23-5 (inwerter) | odwraca BUS11 |
+
+Pomiary: na plytce E160 sygnaly BUS6, BUS7 i BUS11 ida wylacznie do logiki
+HC32, natomiast **BUS10 nie ma polaczenia (floating)** — zgodnie z rola tego
+sygnalu wylacznie w sciezce zapisu (E160 jest modułem tylko-do-odczytu).
+
+### Wykryte polaczenia HC32 (A460)
+
+Pomiar pin-po-pinie obu ukladow HC32:
+
+| Pin HC32 | HC32 #1 | HC32 #2 |
+| --- | --- | --- |
+| 1 | BUS11 oraz piny 1/2 NAND | wyjscie NAND (!BUS11) |
+| 2 | BUS6 oraz pin 2 HC32 #2 | BUS6 oraz pin 2 HC32 #1 |
+| 3 | do pinow 4 i 9 | do pinow 4 i 9 |
+| 4 | do pinow 3 i 9 | do pinow 3 i 9 |
+| 5 | BUS10 oraz pin 5 HC32 #2 | BUS10 oraz pin 5 HC32 #1 |
+| 6 | do pinu 14 HC259 #1 (Enable) | do pinu 14 HC259 #2 (Enable) |
+| 7 | GND | GND |
+| 8 | do pinu 7 HC251 #1 (/OE) | do pinu 7 HC251 #2 (/OE) |
+| 9 | do pinow 3 i 4 | do pinow 3 i 4 |
+| 10 | BUS7 oraz pin 10 HC32 #2 | BUS7 oraz pin 10 HC32 #1 |
+| 11 | nieprześledzone (możliwie floating) | nieprześledzone (możliwie floating) |
+| 12 | GND | GND |
+| 13 | GND | GND |
+| 14 | VCC | VCC |
+
+### Wyprowadzone rownania logiczne
+
+W kazdym HC32 wyjscie bramki 1 (piny 1, 2 -> 3) jest zawracane do bramki 2
+(pin 4) i bramki 3 (pin 9); bramki 2 i 3 otrzymuja po jednym dodatkowym
+wejściu (pin 5 = BUS10; pin 10 = BUS7). Dwie bramki OR tworza funkcje OR
+z trzema wejściami:
+
+```text
+HC32 #1:
+  Y1  = BUS11 OR BUS6
+  EN0 = (BUS11 OR BUS6) OR BUS10      -> Enable HC259 #1   (bank wyjsc 0)
+  OE0 = (BUS11 OR BUS6) OR BUS7       -> /OE HC251 #1       (MUX feedbacku 0)
+
+HC32 #2:
+  Y1  = !BUS11 OR BUS6
+  EN1 = (!BUS11 OR BUS6) OR BUS10     -> Enable HC259 #2    (bank wyjsc 1)
+  OE1 = (!BUS11 OR BUS6) OR BUS7      -> /OE HC251 #2       (MUX feedbacku 1)
+```
+
+Przy BUS6 trzymanym w LOW (`!CS` stale wybrany, jak w obecnej implementacji
+Arduino) modul jest zawsze wybrany, a zapis/odczyt jest bramkowany przez
+BUS10 i BUS7 — zgodnie z potwierdzonymi rolami `!WR` / `!RD` tych linii.
+
+### Hipotezy dotyczace roli sygnalow podczas reverse engineeringu
+
+Analiza logiczna powyzej poczatkowo sugerowala nastepujace role, zanim
+protokol magistrali zostal potwierdzony przez dzialajaca implementacje
+Arduino:
+
+| BUS | Hipoteza z analizy logicznej | Stan koncowy (dzialajace firmware) |
+| --- | --- | --- |
+| BUS6 | strobe cyklu zapisu | podejrzany !CS, trzymany na GND (stale wybrany) |
+| BUS7 | strobe cyklu odczytu | !RD (potwierdzony) |
+| BUS10 | wybor rejestru wyjsc (sciezka zapisu) | !WR (potwierdzony) |
+| BUS11 | wybor banku / rejestru feedbacku | A3 / wybor banku (potwierdzony) |
+
+Oba ujecia sa zgodne: BUS11 wybiera bank wyjsc/feedbacku, czyli dokladnie
+funkcje najstarszego bitu adresu A3.
 
 ## Planowana zmiana mapowania pinow (przyszlosc)
 
