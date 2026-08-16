@@ -45,6 +45,66 @@ The Arduino Nano firmware implements:
 - diagnostic tests
 - serial console (115200 baud, 8N1)
 
+## Firmware Implementation
+
+The firmware drives the bus directly through AVR registers (`PORTB`/`PORTD`,
+`PINB`/`PIND`, `DDRB`/`DDRD`). Time-critical bus transactions run with
+interrupts disabled (`cli()`/`sei()`) for fully deterministic timing.
+
+Bus-level primitives (section "DEFINICJE PINOW" / bus functions):
+
+| Function | Description |
+| --- | --- |
+| `busSetAddress(channel)` | Sets the 4 address bits A0..A3 for channel 0..15. Currently the bits are scattered over two ports (PB1, PD5, PB0, PB2), so each bit is set/cleared individually with a branch. |
+| `busSetDataOut(state)` | Sets the A460 DATA OUT line (D4). |
+| `busWrLow()` / `busWrHigh()` | Pulses the active-LOW write strobe `!WR` (D11). |
+| `busRdLow()` / `busRdHigh()` | Pulses the active-LOW read strobe `!RD` (D7). |
+| `busReadFeedback()` | Reads the raw A460 feedback line (D6). |
+| `busReadE160Data()` | Reads the raw E160 data line (D12). |
+
+A460 functions:
+
+| Function | Description |
+| --- | --- |
+| `writeA460(channel, state)` | Writes one A460 output. Sequence: address -> DATA OUT -> settle (`busShortDelay()`, ~500 ns) -> `!WR` LOW -> settle -> `!WR` HIGH -> DATA OUT back to safe LOW. |
+| `readA460Feedback(channel)` | Reads the effective feedback state of one channel. Sequence: address -> settle -> `!RD` LOW -> sample D6 -> `!RD` HIGH. Inverts the raw level because A460 feedback is active LOW (`A460_FEEDBACK_ACTIVE_LOW`). |
+
+E160 functions:
+
+| Function | Description |
+| --- | --- |
+| `readE160(channel)` | Reads one E160 input. Sequence: address -> settle -> `!RD` LOW -> sample D12 -> `!RD` HIGH. |
+| `readAllE160()` | Reads all 16 E160 inputs; returns a 16-bit mask (bit `ch` = channel `ch`). |
+
+Output management (section "STEROWANIE WYJSCIAMI A460"):
+
+| Function | Description |
+| --- | --- |
+| `maintainOutputs()` | One-pass "apply and verify" used by console commands. For every channel: write -> read feedback -> single retry on mismatch -> update `feedbackState` / `feedbackError`. |
+| `updateAllOutputs(mask)` | Sets `outputState` to the given 16-bit mask and runs `maintainOutputs()`. |
+| `combinedScan()` | Merged bus scan executed every 1 ms in normal mode (see below). |
+| `emergencyOutputsOff()` | Emergency shutdown of all A460 outputs (write-off on every channel) with feedback verification; invoked after `SERIOUS_ERROR_THRESHOLD` consecutive error cycles. |
+
+### combinedScan()
+
+`combinedScan()` scans all 16 channels in a single bus pass every 1 ms.
+For each channel:
+
+1. Set the channel address (`busSetAddress`).
+2. Write the output **only if its requested state changed** (`outputState ^
+   lastWrittenState`) — the A460 latch holds its state, so refresh writes are
+   not needed. Write sequence: DATA OUT -> `busShortDelay()` -> `!WR` LOW ->
+   `busShortDelay()` -> `!WR` HIGH -> DATA OUT back to safe LOW.
+3. One shared `!RD` pulse samples **both** the A460 feedback (D6) and the
+   E160 input (D12) in the same strobe.
+4. After the pass: single write retry for channels with feedback mismatch,
+   `feedbackError` update, `consecutiveErrorCycles` counting, and automatic
+   `emergencyOutputsOff()` on persistent errors.
+
+After the scan, the captured raw E160 states are processed by the debounce
+state machine (`debounceStep()`, per-channel counters, 20 ms) into
+`stableInputs`, then by double-click / long-press detection.
+
 ## Physical BUS Connector
 
 The investigated SAIA connector is a **2x8 pin connector**.
@@ -383,6 +443,76 @@ BUS15 -> +5 V
 BUS16 -> GND
 ```
 
+## Planned Pin Mapping Change (Future Work)
+
+The current pinout is planned to be remapped to allow faster, port-based
+toggling of the bus signals.
+
+### Problem with the current pinout
+
+The address bits A0..A3 are scattered across two ports (PB1, PD5, PB0, PB2),
+so `busSetAddress()` currently requires 4 branched register writes (~16
+instructions) instead of a single port write. Strobe and data lines are mixed
+as well, and D13 (LED) plus the SPI/ISR-capable pins were not considered
+during the initial pin selection.
+
+### Proposed pinout (Option 2 – full remap)
+
+| Function | New pin | Port | Direction | Notes |
+| --- | --- | --- | --- | --- |
+| A0 | D8 | PB0 | OUT | |
+| A1 | D9 | PB1 | OUT | |
+| A2 | D10 | PB2 | OUT | |
+| A3 | D11 | PB3 | OUT | address = one atomic write |
+| A460 DATA OUT | D2 | PD2 | OUT | |
+| !WR | D3 | PD3 | OUT | idle HIGH |
+| !RD | D4 | PD4 | OUT | idle HIGH |
+| A460 FEEDBACK | D5 | PD5 | IN + pull-up | active LOW |
+| E160 DATA | D6 | PD6 | IN + pull-up | active LOW |
+| free | D7, D12 | PD7, PB4 | - | spare / expansion |
+| unused | D13 (PB5) | - | - | skipped (on-board LED) |
+
+### Benefits
+
+- **Address in 2 instructions instead of ~16:**
+  `PORTB = (PORTB & 0xF0) | (channel & 0x0F);` — atomic change of the whole
+  nibble, no intermediate states/glitches on the bus, better timing margin
+  for the 500 ns delay.
+- **Unambiguous mapping** — no more per-bit if/else; readable code, simple
+  `#define` macro set.
+- **Block D2..D11 = 10 pins** in two adjacent rows of an IDC connector
+  (convenient on PCB / protoboard).
+- **Both inputs (FB, E160) on PORTD** — both lines can be read with a single
+  `uint8_t d = PIND;` inside one `!RD` transaction.
+- **Free pins: D7, D12**; D0/D1 (USB serial) and D13 (LED) stay untouched.
+
+### Bus compatibility
+
+BUS -> new pins: BUS3 (A460 DATA OUT, formerly D4) -> D2, BUS4 (A1) -> D9,
+BUS5 (FB / E160) -> D5 / D6, BUS7 (!RD) -> D4, BUS10 (!WR) -> D3,
+BUS11 (A3) -> D11, BUS12 (A0) -> D8, BUS13 (A2) -> D10.
+
+### Planned changes in NANO_SAIA_MASTER.ino (to be done later)
+
+1. Header comment table "MAPOWANIE MAGISTRALI" (lines 1–29) — new pin table.
+2. `#define` section (lines 132–150): `ADDR_A0..A3` -> PB0..PB3,
+   `WR_PIN_BIT` -> PD3, `RD_PIN_BIT` -> PD4, `A460_DATA` -> PD2,
+   `A460_FB` -> PD5, `E160_DATA` -> PD6.
+3. `busSetAddress()` (line 235) -> single PORTB expression (no branches);
+   remove A1 from PORTD.
+4. `busInit()` (line 1349): `DDRB |= 0x0F`, DDRD masks for PD2–PD6,
+   pull-ups on PD5/PD6, idle HIGH on PD3/PD4.
+5. Mapping printout in `setup()` (lines 1389–1398).
+6. Verification: compile (arduino-cli, board nano/atmega328p) and optional
+   bench test.
+
+### Hardware recommendations (optional, outside the code)
+
+- External 4.7–10 kΩ pull-ups to +5 V on !RD, !WR, FB and E160 — during
+  reset/upload the pins are high-Z, and the internal pull-ups
+  (~20–50 kΩ) are active only in firmware.
+- The Nano's 5 V level matches the SAIA bus (as before).
+
 ## Reverse Engineering Status
 
 This project documents the currently known behavior of the SAIA PCD2 module bus.
@@ -456,6 +586,68 @@ Firmware Arduino Nano implementuje:
 - awaryjne wylaczenie wyjsc (`SERIOUS_ERROR_THRESHOLD`)
 - testy diagnostyczne
 - konsole szeregowa (115200 baud, 8N1)
+
+## Implementacja firmware
+
+Firmware steruje magistrala bezposrednio przez rejestry AVR (`PORTB`/`PORTD`,
+`PINB`/`PIND`, `DDRB`/`DDRD`). Transakcje magistrali newralgiczne czasowo
+wykonywane sa przy wylaczonych przerwaniach (`cli()`/`sei()`) dla w pelni
+deterministycznego czasu.
+
+Prymitywy magistrali (sekcja "DEFINICJE PINOW" / funkcje magistrali):
+
+| Funkcja | Opis |
+| --- | --- |
+| `busSetAddress(kanal)` | Ustawia 4 bity adresu A0..A3 dla kanalu 0..15. Obecnie bity sa rozrzucone po dwoch portach (PB1, PD5, PB0, PB2), wiec kazdy bit jest ustawiany osobno z rozgalezieniem. |
+| `busSetDataOut(stan)` | Ustawia linie A460 DATA OUT (D4). |
+| `busWrLow()` / `busWrHigh()` | Przesterowuje aktywne LOW stroby zapisu `!WR` (D11). |
+| `busRdLow()` / `busRdHigh()` | Przesterowuje aktywne LOW stroby odczytu `!RD` (D7). |
+| `busReadFeedback()` | Odczytuje surowa linie feedbacku A460 (D6). |
+| `busReadE160Data()` | Odczytuje surowa linie danych E160 (D12). |
+
+Funkcje A460:
+
+| Funkcja | Opis |
+| --- | --- |
+| `writeA460(kanal, stan)` | Zapisuje pojedyncze wyjscie A460. Sekwencja: adres -> DATA OUT -> stabilizacja (`busShortDelay()`, ~500 ns) -> `!WR` LOW -> stabilizacja -> `!WR` HIGH -> DATA OUT do bezpiecznego stanu LOW. |
+| `readA460Feedback(kanal)` | Odczytuje efektywny stan zwrotny kanalu. Sekwencja: adres -> stabilizacja -> `!RD` LOW -> probka D6 -> `!RD` HIGH. Odwraca surowy poziom, poniewaz feedback A460 jest aktywny LOW (`A460_FEEDBACK_ACTIVE_LOW`). |
+
+Funkcje E160:
+
+| Funkcja | Opis |
+| --- | --- |
+| `readE160(kanal)` | Odczytuje pojedyncze wejscie E160. Sekwencja: adres -> stabilizacja -> `!RD` LOW -> probka D12 -> `!RD` HIGH. |
+| `readAllE160()` | Odczytuje wszystkie 16 wejsc E160; zwraca maske 16-bitowa (bit `ch` = kanal `ch`). |
+
+Zarzadzanie wyjsciami (sekcja "STEROWANIE WYJSCIAMI A460"):
+
+| Funkcja | Opis |
+| --- | --- |
+| `maintainOutputs()` | Jednoprzebiegowe "zastosuj i zweryfikuj", uzywane przez komendy konsoli. Dla kazdego kanalu: zapis -> odczyt feedbacku -> jednokrotna ponowna proba przy niezgodnosci -> aktualizacja `feedbackState` / `feedbackError`. |
+| `updateAllOutputs(maska)` | Ustawia `outputState` zgodnie z maska 16-bitowa i uruchamia `maintainOutputs()`. |
+| `combinedScan()` | Scalony skan magistrali wykonywany co 1 ms w trybie normalnym (opis ponizej). |
+| `emergencyOutputsOff()` | Awaryjne wylaczenie wszystkich wyjsc A460 (zapis OFF na kazdym kanale) z weryfikacja feedbacku; wywolywane po `SERIOUS_ERROR_THRESHOLD` kolejnych cykli bledow. |
+
+### combinedScan()
+
+`combinedScan()` skanuje wszystkie 16 kanalow w jednym przebiegu magistrali co
+1 ms. Dla kazdego kanalu:
+
+1. Ustaw adres kanalu (`busSetAddress`).
+2. Zapisz wyjscie **tylko wtedy, gdy zmienil sie zadany stan**
+   (`outputState ^ lastWrittenState`) — zatrzask A460 trzyma stan, wiec zapisy
+   odswiezajace nie sa potrzebne. Sekwencja zapisu: DATA OUT ->
+   `busShortDelay()` -> `!WR` LOW -> `busShortDelay()` -> `!WR` HIGH ->
+   DATA OUT do bezpiecznego stanu LOW.
+3. Jeden wspolny impuls `!RD` probkuje **jednoczesnie** feedback A460 (D6)
+   oraz wejscie E160 (D12) w tym samym strobe.
+4. Po przebiegu: jednokrotna ponowna proba zapisu dla kanalow z niezgodnoscia
+   feedbacku, aktualizacja `feedbackError`, zliczanie `consecutiveErrorCycles`
+   i automatyczne `emergencyOutputsOff()` przy utrzymujacych sie bledach.
+
+Po skanie surowe stany E160 sa przetwarzane przez maszyne stanow debouncingu
+(`debounceStep()`, liczniki per-kanal, 20 ms) do `stableInputs`, a nastepnie
+przez wykrywanie podwojnego klikniecia / dlugiego przycisniecia.
 
 ## Fizyczne zlacze magistrali
 
@@ -794,6 +986,75 @@ BUS9  -> GND
 BUS15 -> +5 V
 BUS16 -> GND
 ```
+
+## Planowana zmiana mapowania pinow (przyszlosc)
+
+Obecny pinout ma zostac przemapowany, aby umozliwic szybsze przelaczanie
+sygnalow magistrali przez operacje na portach.
+
+### Analiza obecnego pinoutu — problem
+
+Bity adresu A0..A3 sa rozrzucone po dwoch portach (PB1, PD5, PB0, PB2),
+wiec `busSetAddress()` wymaga 4 rozgalezionych zapisow (~16 instrukcji)
+zamiast jednego zapisu do portu. Stropy i dane tez sa wymieszane, a D13 (LED)
+oraz interfejsy SPI/ISR nie sa uwzgledniane w doborze.
+
+### Proponowany pinout (Opcja 2 — pelny remap)
+
+| Funkcja | Nowy pin | Port | Kierunek | Uwagi |
+| --- | --- | --- | --- | --- |
+| A0 | D8 | PB0 | OUT | |
+| A1 | D9 | PB1 | OUT | |
+| A2 | D10 | PB2 | OUT | |
+| A3 | D11 | PB3 | OUT | adres = jeden atomowy zapis |
+| A460 DATA OUT | D2 | PD2 | OUT | |
+| !WR | D3 | PD3 | OUT | spoczynek HIGH |
+| !RD | D4 | PD4 | OUT | spoczynek HIGH |
+| A460 FEEDBACK | D5 | PD5 | IN + pull-up | aktywne LOW |
+| E160 DATA | D6 | PD6 | IN + pull-up | aktywne LOW |
+| wolne | D7, D12 | PD7, PB4 | - | zapas / ekspansja |
+| nieuzywane | D13 (PB5) | - | - | pominac (LED) |
+
+### Korzysci
+
+- **Adres w 2 instrukcjach zamiast ~16:**
+  `PORTB = (PORTB & 0xF0) | (channel & 0x0F);` — atomowa zmiana calego
+  nibble'a, bez posrednich stanow/glitchy na magistrali, lepszy margines
+  czasowy dla 500 ns delay.
+- **Jednoznaczne mapowanie** — koniec if/else per-bit; kod czytelny,
+  proste makra `#define`.
+- **Blok D2..D11 = 10 pinow** pod dwa rzedy zlacza IDC obok siebie
+  (wygodne na PCB/protoboardzie).
+- **Oba wejscia (FB, E160) na PORTD** — mozliwy odczyt obu linii jednym
+  `uint8_t d = PIND;` w pojedynczej transakcji `!RD`.
+- **Wolne: D7, D12**; nie ruszamy D0/D1 (USB serial) ani D13 (LED).
+
+### Zgodnosc z magistrala
+
+BUS -> nowe piny: BUS3 (A460 DATA OUT, dawniej D4) -> D2, BUS4 (A1) -> D9,
+BUS5 (FB / E160) -> D5 / D6, BUS7 (!RD) -> D4, BUS10 (!WR) -> D3,
+BUS11 (A3) -> D11, BUS12 (A0) -> D8, BUS13 (A2) -> D10.
+
+### Plan zmian w NANO_SAIA_MASTER.ino (do wykonania pozniej)
+
+1. Naglowek komentarza "MAPOWANIE MAGISTRALI" (linie 1–29) — nowa tabela pinow.
+2. Sekcja `#define` (linie 132–150): `ADDR_A0..A3` -> PB0..PB3,
+   `WR_PIN_BIT` -> PD3, `RD_PIN_BIT` -> PD4, `A460_DATA` -> PD2,
+   `A460_FB` -> PD5, `E160_DATA` -> PD6.
+3. `busSetAddress()` (linia 235) -> jedno wyrazenie PORTB (bez galezi);
+   usunac A1 z PORTD.
+4. `busInit()` (linia 1349): `DDRB |= 0x0F`, maski DDRD dla PD2–PD6,
+   pull-upy PD5/PD6, spoczynkowe HIGH na PD3/PD4.
+5. Wydruk mapowania w `setup()` (linie 1389–1398).
+6. Weryfikacja: kompilacja (arduino-cli, board nano/atmega328p)
+   i ew. test na stole.
+
+### Zalecenia sprzetowe (opcjonalnie, poza kodem)
+
+- Zewnetrzne pull-upy 4.7–10 kΩ do +5 V na !RD, !WR, FB i E160 — podczas
+  resetu/uploadu piny sa high-Z, a wewnetrzne pull-upy (~20–50 kΩ) sa aktywne
+  tylko w firmware.
+- Poziom 5 V Nano pasuje do magistrali Saia (jak dotychczas).
 
 ## Status reverse engineeringu
 
