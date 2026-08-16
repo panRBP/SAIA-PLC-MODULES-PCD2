@@ -1,31 +1,101 @@
-
 /*
  * =================================================================
  * MAPOWANIE MAGISTRALI SAIA -> FUNKCJA -> ARDUINO NANO
+ * SAIA BUS MAPPING -> FUNCTION -> ARDUINO NANO
  * =================================================================
  *
- * BUS     FUNKCJA                         ARDUINO NANO / ZASILANIE
+ * BUS     FUNKCJA / FUNCTION                ARDUINO NANO / POWER
  * -----------------------------------------------------------------
- * BUS1    nieuzywany / niepodlaczony      -
- * BUS2    nieuzywany / niepodlaczony      -
- * BUS3    A460 DATA OUT                  D4
- * BUS4    A1                            D5
- * BUS5    A460 DATA IN / FEEDBACK       D6
- *         E160 DATA IN                  D12
- * BUS6    nieuzywany / niepodlaczony      -
- * BUS7    READ STROBE (!RD)              D7
- * BUS8    +5 V                           +5 V
- * BUS9    GND                            GND
- * BUS10   WRITE STROBE (!WR)             D11
- * BUS11   BANK / A3                     D10
- * BUS12   A0                            D9
- * BUS13   A2                            D8
- * BUS14   !CLR                           VCC (+5 V)
- * BUS15   +5 V                           +5 V
- * BUS16   GND                            GND
+ * BUS1    nieużywany / niepodłączony        -
+ *         unused / not connected
+ *
+ * BUS2    nieużywany / niepodłączony        -
+ *         unused / not connected
+ *
+ * BUS3    A460 DATA OUT                     D4
+ *
+ * BUS4    A1                                D5
+ *
+ * BUS5    A460 DATA IN / FEEDBACK           D6
+ *         E160 DATA IN                      D12
+ *
+ * BUS6    prawdopodobnie !CS / CHIP SELECT  GND
+ *         probably !CS / CHIP SELECT
+ *
+ * BUS7    READ STROBE (!RD)                 D7
+ *
+ * BUS8    +5 V                              +5 V
+ *
+ * BUS9    GND                               GND
+ *
+ * BUS10   WRITE STROBE (!WR)                D11
+ *
+ * BUS11   BANK / A3                         D10
+ *
+ * BUS12   A0                                D9
+ *
+ * BUS13   A2                                D8
+ *
+ * BUS14   A460 !CLR / CLEAR                 +5 V
+ *         A460 !CLR / CLEAR
+ *
+ * BUS15   +5 V                              +5 V
+ *
+ * BUS16   GND                               GND
  * -----------------------------------------------------------------
- * !RD i !WR aktywne w stanie LOW; feedback A460 i wejscia E160
- * aktywne LOW (linie OC sciagane do masy).
+ *
+ * !RD i !WR aktywne w stanie LOW.
+ * !RD and !WR are active LOW.
+ *
+ * BUS6 jest prawdopodobnie sygnalem !CS (CHIP SELECT)
+ * oryginalnej magistrali SAIA. W obecnej implementacji
+ * jest fizycznie podlaczony do GND, czyli stale aktywny.
+ *
+ * BUS6 is probably the !CS (CHIP SELECT) signal of the
+ * original SAIA bus. In the current implementation it is
+ * physically connected to GND, therefore permanently active.
+ *
+ * BUS14 (!CLR) jest sygnalem CLEAR dotyczacym wylacznie
+ * modulu A460. W obecnej implementacji jest na stale
+ * podlaczony do +5 V, aby A460 pozostawal poza stanem CLEAR.
+ *
+ * BUS14 (!CLR) is the CLEAR signal used only by the A460 module.
+ * In the current implementation it is permanently connected
+ * to +5 V, keeping the A460 out of the CLEAR state.
+ *
+ * Feedback A460 i wejscia E160 sa aktywne LOW
+ * (linie open collector sciagane do masy).
+ *
+ * A460 feedback and E160 inputs are active LOW
+ * (open-collector lines pulled down to GND).
+ *
+ * -----------------------------------------------------------------
+ * MAPOWANIE LOGICZNE / LOGICAL MAPPING
+ * -----------------------------------------------------------------
+ *
+ * A460 OUTPUT MODULE:
+ *   BUS3  -> DATA OUT
+ *   BUS4  -> A1
+ *   BUS5  -> DATA IN / FEEDBACK
+ *   BUS6  -> !CS (probably)
+ *   BUS7  -> !RD
+ *   BUS10 -> !WR
+ *   BUS11 -> A3
+ *   BUS12 -> A0
+ *   BUS13 -> A2
+ *   BUS14 -> !CLR
+ *
+ * E160 INPUT MODULE:
+ *   BUS5  -> DATA IN
+ *   BUS6  -> !CS (probably)
+ *   BUS7  -> !RD
+ *   BUS11 -> A3
+ *   BUS12 -> A0
+ *   BUS13 -> A2
+ *
+ * BUS14 (!CLR) belongs exclusively to the A460 module
+ * and is not used by the E160 input module.
+ *
  * =================================================================
  */
 
