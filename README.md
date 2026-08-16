@@ -21,6 +21,10 @@ The project currently focuses on:
 > **Important:** This is a reverse-engineering project.
 > Some signal names are confirmed experimentally, while others are still
 > hypothetical and are marked accordingly.
+> This is a hobby reverse-engineering project. 
+> It is not affiliated with or endorsed by SAIA-Burgess / Honeywell. 
+> All product names are trademarks of their respective owners. 
+> Use at your own risk.
 
 ## Repository Contents
 
@@ -647,6 +651,10 @@ Projekt obecnie skupia sie na:
 > **Wazne:** To projekt reverse engineeringu.
 > Niektore nazwy sygnalow sa potwierdzone doswiadczalnie, inne sa na razie
 > hipotetyczne i zostaly odpowiednio oznaczone.
+>To hobbystyczny projekt reverse engineeringu. 
+>Nie jest powiazany z ani popierany przez SAIA-Burgess / Honeywell. 
+> Wszystkie nazwy produktow sa znakami towarowymi ich wlascicieli. 
+> Uzywasz na wlasna odpowiedzialnosc.
 
 ## Zawartosc repozytorium
 
