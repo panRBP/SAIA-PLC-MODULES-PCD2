@@ -538,6 +538,90 @@ Signals marked `probably` / `hypothetical` should not be considered officially
 confirmed SAIA documentation. They represent the current reverse-engineering
 hypothesis based on observed hardware behavior and working communication.
 
+## Test Procedure and Results
+
+### Hardware setup
+
+| Item | Value |
+| --- | --- |
+| Controller | Arduino Nano (ATmega328P, 16 MHz) |
+| Serial console | 115200 baud, 8N1 |
+| Modules | SAIA PCD2.A460 (16 outputs), PCD2.E160 (16 inputs) |
+| Loopback wiring | W1->E1, W3->E2, W5->E3 (output terminal -> input terminal) |
+
+> Channel numbering in the firmware is **0-based**: CH00 = terminal W1 / E1,
+> CH01 = terminal W2 / E2, and so on.
+
+### Build and upload
+
+```text
+arduino-cli compile --fqbn arduino:avr:nano NANO_SAIA_MASTER
+arduino-cli upload  -p COM10 --fqbn arduino:avr:nano NANO_SAIA_MASTER
+```
+
+(arduino-cli is bundled with Arduino IDE 2.x, or installed separately)
+
+### Test procedure (serial console)
+
+1. `test feedback` — A460 feedback for every channel: OFF -> read, ON -> read,
+   OFF -> read. Always ends with all outputs OFF.
+2. `test outputs` — two sequences: per-channel ON/OFF (with feedback check),
+   then cumulative chaining (1, 1+2, 1+2+3, ...). Always ends with all
+   outputs OFF.
+3. Loopback check (output -> input), for each pair (W1->E1, W3->E2, W5->E3):
+   - `o <out> 1` -> `r <out>` (expected: feedback ON) -> `i <in>`
+     (expected: input active, reads `0` — active-LOW line)
+   - `o <out> 0` -> `i <in>` (expected: input inactive, reads `1`)
+   - a full status dump is available with `a`.
+4. `s` (or `test speed`) — speed test on channel 0: raw A460 writes,
+   writes with feedback verification, and loopback W1->E1 with periods from
+   20 ms down to 20 us (E160 input sampled in the middle of each half-period).
+   All timing is measured on the MCU with `micros()`, unaffected by serial.
+
+### Test results (FW 2.0, 2026-08-16)
+
+| Test | Result |
+| --- | --- |
+| `test outputs` (48 steps, 2 sequences) | 0 errors |
+| `test feedback` (16 channels x 3 reads) | 0 errors |
+| Loopback W1->E1 | PASS (ON -> 0, OFF -> 1) |
+| Loopback W3->E2 | PASS (ON -> 0, OFF -> 1) |
+| Loopback W5->E3 | PASS (ON -> 0, OFF -> 1) |
+| Speed: raw A460 write | ~59.3 kHz (118 700 toggles/s) |
+| Speed: write + feedback verify | ~36.3 kHz, 0 feedback errors |
+| Speed: loopback W1->E1, 100 % tracking | 20 ms period (~50 Hz) |
+
+Speed test detail (firmware output):
+
+```text
+Zapis A460 (surowo)   : ~59.3 kHz        (raw writes)
+Zapis+feedback A460   : ~36.3 kHz, 0 bledow feedbacku
+
+LOOPBACK W1->E1 (CH0): input sampled at half period
+  okres[us]   czest.[Hz]   zgodnosc
+    20000        50       100.0 %
+    15000        66         1.0 %
+    12000        83         0.0 %
+    10000       100        25.0 %
+     5000       199        49.0 %
+    <=2000    1-8 kHz      50.0 %   (input never follows)
+```
+
+### Interpretation
+
+- The bus itself is fast: the verified output rate with per-write feedback
+  reads is ~36 kHz, with zero feedback errors.
+- The E160 input front-end contains an anti-noise filter that requires
+  roughly 10 ms of continuous signal before a new input state is accepted.
+  As a result the maximum reliable output->input loopback frequency is
+  ~50 Hz (20 ms period). The transition is sharp (20 ms = 100 %, 15 ms = 1 %),
+  which indicates a discrete hardware filter rather than CPU overhead.
+- An A/B comparison against the original firmware (1.8, before bus
+  optimization) produced identical loopback results, confirming the limit
+  is the module hardware, not the firmware. The firmware's own limits are
+  separate and deliberate: the 1 ms scan bounds state refresh to 1 kHz,
+  and the 20 ms firmware debounce bounds stable-input events to ~25-50 Hz.
+
 ## Disclaimer
 
 This is a hobby reverse-engineering project. It is not affiliated with or
@@ -1082,6 +1166,91 @@ Sygnaly oznaczone jako `prawdopodobnie` / `hipoteza` nie powinny byc traktowane
 jako oficjalnie potwierdzona dokumentacja SAIA. Stanowia one obecna hipoteze
 reverse engineeringu, oparta na zaobserwowanym zachowaniu sprzetu i dzialajacej
 komunikacji.
+
+## Procedura testowa i wyniki testow
+
+### Konfiguracja sprzetowa
+
+| Element | Wartosc |
+| --- | --- |
+| Kontroler | Arduino Nano (ATmega328P, 16 MHz) |
+| Konsola szeregowa | 115200 baud, 8N1 |
+| Moduly | SAIA PCD2.A460 (16 wyjsc), PCD2.E160 (16 wejsc) |
+| Okablowanie loopback | W1->E1, W3->E2, W5->E3 (wyjscie -> wejscie) |
+
+> Numeracja kanalow w firmware jest **od zera**: CH00 = zacisk W1 / E1,
+> CH01 = zacisk W2 / E2 itd.
+
+### Kompilacja i wgrywanie
+
+```text
+arduino-cli compile --fqbn arduino:avr:nano NANO_SAIA_MASTER
+arduino-cli upload  -p COM10 --fqbn arduino:avr:nano NANO_SAIA_MASTER
+```
+
+(arduino-cli jest dostarczany razem z Arduino IDE 2.x lub instalowany osobno)
+
+### Procedura testowa (konsola szeregowa)
+
+1. `test feedback` — feedback A460 dla kazdego kanalu: OFF -> odczyt, ON -> odczyt,
+   OFF -> odczyt. Zawsze konczy sie wylaczeniem wszystkich wyjsc.
+2. `test outputs` — dwie sekwencje: pojedyncze ON/OFF kazdego kanalu (ze sprawdzeniem
+   feedbacku), a nastepnie lanciuch narastajacy (1, 1+2, 1+2+3, ...). Zawsze konczy
+   sie wylaczeniem wszystkich wyjsc.
+3. Test loopbacku (wyjscie -> wejscie) dla kazdej pary (W1->E1, W3->E2, W5->E3):
+   - `o <wyjscie> 1` -> `r <wyjscie>` (oczekiwany feedback ON) -> `i <wejscie>`
+     (oczekiwane wejscie aktywne, czyta `0` — linia aktywna stanem niskim)
+   - `o <wyjscie> 0` -> `i <wejscie>` (oczekiwane wejscie nieaktywne, czyta `1`)
+   - pelny podglad stanow daje komenda `a`.
+4. `s` (lub `test speed`) — test szybkosci na kanale 0: surowe zapisy A460,
+   zapisy ze sprawdzaniem feedbacku oraz loopback W1->E1 z okresami od 20 ms
+   w dol do 20 us (wejscie E160 probkowane w polowie kazdego polokresu).
+   Wszystkie czasy mierzone sa na MCU przez `micros()`, bez wplywu portu
+   szeregowego.
+
+### Wyniki testow (FW 2.0, 2026-08-16)
+
+| Test | Wynik |
+| --- | --- |
+| `test outputs` (48 krokow, 2 sekwencje) | 0 bledow |
+| `test feedback` (16 kanalow x 3 odczyty) | 0 bledow |
+| Loopback W1->E1 | ZALICZONY (ON -> 0, OFF -> 1) |
+| Loopback W3->E2 | ZALICZONY (ON -> 0, OFF -> 1) |
+| Loopback W5->E3 | ZALICZONY (ON -> 0, OFF -> 1) |
+| Szybkosc: surowy zapis A460 | ~59.3 kHz (118 700 przelaczen/s) |
+| Szybkosc: zapis + sprawdzanie feedbacku | ~36.3 kHz, 0 bledow feedbacku |
+| Szybkosc: loopback W1->E1, 100 % zgodnosci | okres 20 ms (~50 Hz) |
+
+Szczegoly testu szybkosci (wyjscie firmware):
+
+```text
+Zapis A460 (surowo)   : ~59.3 kHz        (surowy zapis)
+Zapis+feedback A460   : ~36.3 kHz, 0 bledow feedbacku
+
+LOOPBACK W1->E1 (CH0): wejscie probkowane w polowie polokresu
+  okres[us]   czest.[Hz]   zgodnosc
+    20000        50       100.0 %
+    15000        66         1.0 %
+    12000        83         0.0 %
+    10000       100        25.0 %
+     5000       199        49.0 %
+    <=2000    1-8 kHz      50.0 %   (wejscie nigdy nie nadaza)
+```
+
+### Interpretacja
+
+- Sama magistrala jest szybka: potwierdzona szybkosc wyjsc z odczytem feedbacku
+  po kazdym zapisie to ~36 kHz, przy zerowej liczbie bledow feedbacku.
+- Front-end wejsc modulu E160 zawiera filtr przeciwzakloceniowy, ktory wymaga
+  okolo 10 ms ciaglego sygnalu, zanim nowy stan wejscia zostanie zaakceptowany.
+  Dlatego maksymalna niezawodna czestotliwosc loopbacku wyjscie->wejscie to
+  ~50 Hz (okres 20 ms). Przejscie jest ostre (20 ms = 100 %, 15 ms = 1 %), co
+  wskazuje na twardy filtr sprzetowy, a nie na narzuty z procesora.
+- Porownanie A/B z oryginalnym firmware (1.8, przed optymalizacja magistrali)
+  dalo identyczne wyniki loopbacku, co potwierdza, ze limit lezy w sprzecie
+  modulu, a nie w firmware. Wlasne limity firmware sa od tego oddzielne
+  i zamierzone: skan co 1 ms ogranicza odswiezanie stanow do 1 kHz, a debounce
+  firmware (20 ms) ogranicza zdarzenia stabilnych wejsc do okolo 25-50 Hz.
 
 ## Zastrzezenie
 
